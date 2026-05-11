@@ -2,8 +2,10 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using PrApprover.Services;
 
 namespace PrApprover;
@@ -12,13 +14,35 @@ public partial class MainWindow : Window
 {
     private static readonly HttpClient _http = new();
     private readonly ConfigStore _store = new();
+    private readonly DispatcherTimer _prDebounce;
 
     public MainWindow()
     {
         InitializeComponent();
         Loaded += MainWindow_Loaded;
+
+        _prDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _prDebounce.Tick += async (_, _) =>
+        {
+            _prDebounce.Stop();
+            await RefreshPrInfoAsync();
+        };
+
         ApiKeyBox.LostFocus += async (_, _) => await RefreshIdentityAsync();
-        RepoUrlBox.LostFocus += (_, _) => SaveConfig();
+        RepoUrlBox.LostFocus += async (_, _) => { SaveConfig(); await RefreshPrInfoAsync(); };
+        PrInputBox.TextChanged += (_, _) =>
+        {
+            _prDebounce.Stop();
+            _prDebounce.Start();
+        };
+        PrInputBox.KeyDown += async (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                _prDebounce.Stop();
+                await RefreshPrInfoAsync();
+            }
+        };
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -73,41 +97,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        var prInput = PrInputBox.Text.Trim();
-        if (string.IsNullOrEmpty(prInput))
+        if (!TryResolvePr(out var owner, out var name, out var number, out var error))
         {
-            SetStatus("Enter a PR URL or number.", isError: true);
-            return;
-        }
-
-        // Resolve owner/repo/number. PR URL wins; otherwise use Repo URL + number.
-        RepoRef? repo;
-        int number;
-        if (RepoRef.TryParsePrUrl(prInput, out var prRepo, out number))
-        {
-            repo = prRepo;
-        }
-        else if (int.TryParse(prInput, out number))
-        {
-            if (!RepoRef.TryParseRepo(RepoUrlBox.Text.Trim(), out repo))
-            {
-                SetStatus("Repo URL is missing or invalid.", isError: true);
-                return;
-            }
-        }
-        else
-        {
-            SetStatus("PR input must be a full PR URL or a number.", isError: true);
+            SetStatus(error!, isError: true);
             return;
         }
 
         ApproveButton.IsEnabled = false;
-        SetStatus($"Approving PR #{number} in {repo!.Owner}/{repo.Name}...", isError: false);
+        SetStatus($"Approving PR #{number} in {owner}/{name}...", isError: false);
         try
         {
             var client = new GitHubClient(_http, token);
-            await client.ApprovePullRequestAsync(repo.Owner, repo.Name, number);
-            SetStatus($"Approved PR #{number} in {repo.Owner}/{repo.Name}.", isError: false, success: true);
+            await client.ApprovePullRequestAsync(owner, name, number);
+            SetStatus($"Approved PR #{number} in {owner}/{name}.", isError: false, success: true);
+            await RefreshPrInfoAsync();
         }
         catch (Exception ex)
         {
@@ -118,6 +121,119 @@ public partial class MainWindow : Window
             ApproveButton.IsEnabled = true;
         }
     }
+
+    private bool TryResolvePr(out string owner, out string name, out int number, out string? error)
+    {
+        owner = ""; name = ""; number = 0; error = null;
+        var prInput = PrInputBox.Text.Trim();
+        if (string.IsNullOrEmpty(prInput))
+        {
+            error = "Enter a PR URL or number.";
+            return false;
+        }
+
+        if (RepoRef.TryParsePrUrl(prInput, out var prRepo, out number))
+        {
+            owner = prRepo!.Owner; name = prRepo.Name;
+            return true;
+        }
+
+        if (int.TryParse(prInput, out number))
+        {
+            if (!RepoRef.TryParseRepo(RepoUrlBox.Text.Trim(), out var repo))
+            {
+                error = "Repo URL is missing or invalid.";
+                return false;
+            }
+            owner = repo!.Owner; name = repo.Name;
+            return true;
+        }
+
+        error = "PR input must be a full PR URL or a number.";
+        return false;
+    }
+
+    private async Task RefreshPrInfoAsync()
+    {
+        var token = ApiKeyBox.Text.Trim();
+        if (string.IsNullOrEmpty(token))
+        {
+            PrInfoText.Text = "";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(PrInputBox.Text))
+        {
+            PrInfoText.Text = "";
+            return;
+        }
+        if (!TryResolvePr(out var owner, out var name, out var number, out _))
+        {
+            PrInfoText.Text = "";
+            return;
+        }
+
+        PrInfoText.Text = $"Loading PR #{number}...";
+        PrInfoText.Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
+        try
+        {
+            var client = new GitHubClient(_http, token);
+            var info = await client.GetPullRequestInfoAsync(owner, name, number);
+            PrInfoText.Text = $"PR #{number}: {FormatPrInfo(info)}";
+            PrInfoText.Foreground = info.Merged
+                ? new SolidColorBrush(Color.FromRgb(0x8A, 0x4F, 0xBE))
+                : info.MergeStateStatus == "CLEAN" && info.ReviewDecision == "APPROVED"
+                    ? new SolidColorBrush(Color.FromRgb(0x1A, 0x7F, 0x37))
+                    : new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55));
+        }
+        catch (Exception ex)
+        {
+            PrInfoText.Text = $"PR #{number}: {ex.Message}";
+            PrInfoText.Foreground = new SolidColorBrush(Color.FromRgb(0xCF, 0x22, 0x2E));
+        }
+    }
+
+    private static string FormatPrInfo(PullRequestInfo info)
+    {
+        var author = string.IsNullOrEmpty(info.Author) ? "" : $"by @{info.Author}";
+        var approvals = info.ApprovalCount == 1 ? "1 approval" : $"{info.ApprovalCount} approvals";
+
+        if (info.Merged)
+        {
+            var date = info.MergedAt?.ToLocalTime().ToString("yyyy-MM-dd") ?? "";
+            var into = string.IsNullOrEmpty(info.BaseRef) ? "" : $" into {info.BaseRef}";
+            var head = string.IsNullOrEmpty(date) ? $"Merged{into}" : $"Merged {date}{into}";
+            return JoinNonEmpty(author, head, approvals);
+        }
+
+        if (string.Equals(info.State, "CLOSED", StringComparison.OrdinalIgnoreCase))
+            return JoinNonEmpty(author, "Closed (not merged)", approvals);
+
+        string? decision = info.ReviewDecision switch
+        {
+            "CHANGES_REQUESTED" => "Changes requested",
+            "REVIEW_REQUIRED" => "Review required",
+            _ => null
+        };
+
+        string? mergeStatus = info.IsDraft ? "Draft" : info.MergeStateStatus switch
+        {
+            "CLEAN" => "Ready to merge",
+            "DIRTY" => "Conflicts",
+            "BLOCKED" => "Blocked",
+            "BEHIND" => "Behind base",
+            "UNSTABLE" => "Checks failing",
+            "HAS_HOOKS" => "Awaiting hooks",
+            "UNKNOWN" => "Mergeability pending",
+            _ => null
+        };
+
+        var comments = info.UnresolvedThreads == 1 ? "1 open comment" : $"{info.UnresolvedThreads} open comments";
+
+        return JoinNonEmpty(author, approvals, decision, mergeStatus, comments);
+    }
+
+    private static string JoinNonEmpty(params string?[] parts) =>
+        string.Join(" · ", parts.Where(p => !string.IsNullOrEmpty(p)));
 
     private async Task RefreshIdentityAsync()
     {
