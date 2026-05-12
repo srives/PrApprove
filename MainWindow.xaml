@@ -1,7 +1,7 @@
 <Window x:Class="PrApprover.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="PR Approver" Height="420" Width="560"
+        Title="PR Approver" Height="445" Width="560"
         Icon="appicon.ico"
         WindowStartupLocation="CenterScreen"
         ResizeMode="CanMinimize">
@@ -12,6 +12,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -80,6 +81,10 @@
 
         <!-- Compact PR info line -->
         <TextBlock Grid.Row="6" x:Name="PrInfoText" Margin="0,6,0,0"
+                   FontSize="11" Foreground="#555" TextTrimming="CharacterEllipsis"/>
+
+        <!-- Branch line -->
+        <TextBlock Grid.Row="7" x:Name="BranchText" Margin="0,3,0,0"
                    FontSize="11" Foreground="#555" TextTrimming="CharacterEllipsis"/>
     </Grid>
 </Window>

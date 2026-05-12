@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -13,6 +15,7 @@ namespace PrApprover;
 public partial class MainWindow : Window
 {
     private static readonly HttpClient _http = new();
+    private static readonly Regex WorkItemRegex = new(@"\bWAT\s*-?\s*\d+\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private readonly ConfigStore _store = new();
     private readonly DispatcherTimer _prDebounce;
 
@@ -159,26 +162,31 @@ public partial class MainWindow : Window
         if (string.IsNullOrEmpty(token))
         {
             PrInfoText.Text = "";
+            BranchText.Inlines.Clear();
             return;
         }
         if (string.IsNullOrWhiteSpace(PrInputBox.Text))
         {
             PrInfoText.Text = "";
+            BranchText.Inlines.Clear();
             return;
         }
         if (!TryResolvePr(out var owner, out var name, out var number, out _))
         {
             PrInfoText.Text = "";
+            BranchText.Inlines.Clear();
             return;
         }
 
         PrInfoText.Text = $"Loading PR #{number}...";
+        BranchText.Inlines.Clear();
         PrInfoText.Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
         try
         {
             var client = new GitHubClient(_http, token);
             var info = await client.GetPullRequestInfoAsync(owner, name, number);
             PrInfoText.Text = $"PR #{number}: {FormatPrInfo(info)}";
+            SetBranchText(info.HeadRef);
             PrInfoText.Foreground = info.Merged
                 ? new SolidColorBrush(Color.FromRgb(0x8A, 0x4F, 0xBE))
                 : info.MergeStateStatus == "CLEAN" && info.ReviewDecision == "APPROVED"
@@ -188,8 +196,34 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             PrInfoText.Text = $"PR #{number}: {ex.Message}";
+            BranchText.Inlines.Clear();
             PrInfoText.Foreground = new SolidColorBrush(Color.FromRgb(0xCF, 0x22, 0x2E));
         }
+    }
+
+    private void SetBranchText(string branch)
+    {
+        BranchText.Inlines.Clear();
+        if (string.IsNullOrWhiteSpace(branch)) return;
+
+        BranchText.Inlines.Add(new Run("Branch: ") { Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)) });
+
+        var last = 0;
+        foreach (Match match in WorkItemRegex.Matches(branch))
+        {
+            if (match.Index > last)
+                BranchText.Inlines.Add(new Run(branch[last..match.Index]));
+
+            BranchText.Inlines.Add(new Run(match.Value)
+            {
+                Foreground = new SolidColorBrush(Color.FromRgb(0xB0, 0x31, 0x7D)),
+                FontWeight = FontWeights.SemiBold
+            });
+            last = match.Index + match.Length;
+        }
+
+        if (last < branch.Length)
+            BranchText.Inlines.Add(new Run(branch[last..]));
     }
 
     private static string FormatPrInfo(PullRequestInfo info)

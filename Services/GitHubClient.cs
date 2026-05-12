@@ -23,6 +23,7 @@ public sealed class PullRequestInfo
     public string? ReviewDecision { get; set; }
     public int UnresolvedThreads { get; set; }
     public string BaseRef { get; set; } = "";
+    public string HeadRef { get; set; } = "";
     public string Author { get; set; } = "";
     public int ApprovalCount { get; set; }
 }
@@ -77,6 +78,7 @@ query Q($owner: String!, $name: String!, $number: Int!) {
       mergeStateStatus
       reviewDecision
       baseRefName
+      headRefName
       author { login }
       latestOpinionatedReviews(first: 100) {
         nodes { state }
@@ -122,6 +124,7 @@ query Q($owner: String!, $name: String!, $number: Int!) {
             MergeStateStatus = GetStr(pr, "mergeStateStatus"),
             ReviewDecision = pr.TryGetProperty("reviewDecision", out var rd) && rd.ValueKind == JsonValueKind.String ? rd.GetString() : null,
             BaseRef = GetStr(pr, "baseRefName"),
+            HeadRef = GetStr(pr, "headRefName"),
         };
 
         if (pr.TryGetProperty("mergedAt", out var ma) && ma.ValueKind == JsonValueKind.String)
